@@ -1,0 +1,86 @@
+name: binary-release
+
+on:
+  push:
+    branches:
+      - "**" #TODO: Remove
+    tags:
+      - "v.*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        ghr_version: [ v0.13.0 ]
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v2
+      - id: tag
+        shell: python
+        run: |
+          import os
+
+          def output(name, value):
+            print(f"::set-output name=${name}::${value}")
+
+          tag = os.environ['GITHUB_REF'].split('/')[-1]
+          ghr_version = '${{ matrix.ghr_version }}'
+          running_os = '{{ matrix.os }}'.split('-')[0]
+
+          ghr_os = 'darwin' if running_os == 'macos' else running_os
+          ghr_extension = 'tar.gz' if running_os == 'ubuntu' else 'zip'
+          gh_binary_suffix = '.exe' if running_os == 'windows' else ''
+
+          ghr_folder = f"ghr_${ghr_version}_${ghr_os}_amd64"
+          ghr_file = f"${ghr_folder}.${ghr_extension}"
+
+          os.makedirs("../", exist_ok=True)
+          ghr_path = f"../utils/${ghr_folder}/ghr${gh_binary_suffix}"
+          if running_os == "ubuntu":
+              extract_command = f"tar xvf ${ghr_file} -C ../utils"
+          else:
+              extract_command = f"unzip -d ../utils ${ghr_file}"
+
+          output('TAG', tag)
+          output('GHR_FILE', ghr_file)
+          output('GHR_EXTRACT_COMMAND', extract_command)
+          output('GHR_BINARY_PATH', ghr_path)
+      - name: Install ghrq
+        shell: bash
+        run: |
+          cat > trusted_sha_sums <<EOF
+          319988a001462f80b37cf40fbc41b9de60b0a1cffa2a338b47b9fe5eef25f60e  ghr_v0.13.0_darwin_amd64.zip
+          c428627270ae26e206cb526cb8c7bdfba475dd278f6691ddaf863355adadfa13  ghr_v0.13.0_linux_amd64.tar.gz
+          e87485263f553ad64d4682967034a0a371ec9afa69ceecf4d1cd218ec4598381  ghr_v0.13.0_windows_amd64.zip
+          EOF
+          curl -sLO https://github.com/tcnksm/ghr/releases/download/${GHR_VERSION}/${{ steps.tag.outputs.GHR_FILE }}
+          sha256sum -c trusted_sha_sums
+          ${{ steps.tag.outputs.GHR_EXTRACT_COMMAND }}
+      - name: Build
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo install --target ${{ matrix.target }} --root install-root --path .
+      - name: Publish
+        shell: bash
+        run: |
+          cd install-root
+          files=$(ls)
+          echo "$files" | while read file; do
+            local suffix
+            local new_file
+            suffix=$(echo "$file" | grep -o '\.exe' || true)
+            new_file="$(basename $i .exe)-${{ steps.outputs.TAG }}-${{ matrix.target }}${suffix}"
+            mv "$file" "$new_file"
+            sha256sum "$file" > "${new_file.SHA256SUM}"
+          done
+          ${{ steps.tag.outputs.GHR_BINARY_PATH }} ${{ steps.tag.outputs.TAG }} .
